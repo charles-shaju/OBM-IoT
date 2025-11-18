@@ -1,168 +1,154 @@
-// ================================================================
-//  ESP32-C3 Super Mini + Quectel EC200U (4G) + Firebase Realtime DB
-//  Upload GPS every 5 seconds to:
-//  https://obm-gps-default-rtdb.firebaseio.com/gps.json?auth=SECRET
-// ================================================================
+// =======================================
+// EC200U + ESP32-C3 + Firebase GPS Uploader
+// Airtel APN + RAW HTTP REST (no API key)
+// =======================================
+
 #include <Arduino.h>
-#define RX_PIN 4      // ESP32 UART1 RX -> EC200U TX
-#define TX_PIN 5      // ESP32 UART1 TX -> EC200U RX
 
-HardwareSerial gsm(1); // UART1
+#define SerialMon Serial
+#define SerialAT Serial1  // UART1 on ESP32-C3
 
-String gsm_response;
-unsigned long lastGPS = 0;
+// ESP32-C3 UART pins
+#define EC200U_TX 4    // ESP32-C3 TX → EC200U RX
+#define EC200U_RX 5    // ESP32-C3 RX → EC200U TX
 
-// Firebase details
-String firebaseHost = "https://obm-gps-default-rtdb.firebaseio.com/gps.json?auth=sJiErOexGgZkC2NHAZAmupP92LqEp0dV2JKLGAE0";
+// Airtel APN
+String APN = "airtelgprs.com";
 
-// Function declarations
-bool getResponse(String cmd, String expected, int timeout);
-bool startGPS();
-String readGPS();
-bool uploadToFirebase(float lat, float lon, String timeStr);
+// Firebase URL
+String FIREBASE_URL = "https://obm-gps-default-rtdb.firebaseio.com/gps.json";
 
-void setup() {
-  Serial.begin(115200);
-  delay(1000);
+// Buffer
+String atResponse = "";
 
-  Serial.println("\nStarting EC200U...");
-  gsm.begin(115200, SERIAL_8N1, RX_PIN, TX_PIN);
-  delay(3000);
-
-  // Basic module check
-  while (!getResponse("AT", "OK", 2000)) {
-    Serial.println("Retrying...");
-    delay(500);
-  }
-
-  getResponse("ATE0", "OK", 1000);          // Disable echo
-  getResponse("AT+CMEE=2", "OK", 1000);     // Verbose error
-  getResponse("AT+CREG?", "OK", 2000);      // Check network
-
-  // Start GNSS
-  if (startGPS()) Serial.println("GPS started.");
-  else Serial.println("GPS failed to start.");
-}
-
-void loop() {
-  if (millis() - lastGPS >= 5000) {  // Every 5 seconds
-    lastGPS = millis();
-
-    String gps = readGPS();
-    Serial.println("GPS RAW: " + gps);
-
-    if (gps.indexOf("+QGPSLOC:") >= 0) {
-      // ---------------------------------------------------------
-      // Parse GPS data
-      // Format: +QGPSLOC: <time>, <lat>, <lon>, ...
-      // Example:
-      // +QGPSLOC: 20240212 121530.0,9.987654,76.456789,...
-      // ---------------------------------------------------------
-
-      int comma1 = gps.indexOf(',');
-      int comma2 = gps.indexOf(',', comma1 + 1);
-
-      String timeStr = gps.substring(gps.indexOf(":") + 2, comma1);
-      float lat = gps.substring(comma1 + 1, comma2).toFloat();
-      float lon = gps.substring(comma2 + 1).toFloat();
-
-      Serial.println("LAT: " + String(lat, 6));
-      Serial.println("LON: " + String(lon, 6));
-      Serial.println("TIME: " + timeStr);
-
-      // Upload to Firebase
-      uploadToFirebase(lat, lon, timeStr);
-    }
-  }
-}
-
-
-
-// =====================================================
-// SEND AT COMMAND AND WAIT FOR RESPONSE
-// =====================================================
-bool getResponse(String cmd, String expected, int timeout) {
-  gsm_response = "";
-  Serial.println("> " + cmd);
-  gsm.println(cmd);
-
-  long start = millis();
-  while (millis() - start < timeout) {
-    if (gsm.available()) {
-      gsm_response += gsm.readString();
-      gsm_response.trim();
-
-      if (gsm_response.indexOf(expected) >= 0) {
-        Serial.println(gsm_response);
-        return true;
-      }
-    }
-  }
-
-  Serial.println("Timeout: " + gsm_response);
-  return false;
-}
-
-
-
-// =====================================================
-// START GNSS
-// =====================================================
-bool startGPS() {
-  return getResponse("AT+QGPS=1", "OK", 2000);
-}
-
-
-
-// =====================================================
-// GET GPS LOCATION
-// =====================================================
-String readGPS() {
-  gsm.println("AT+QGPSLOC=2");
-  delay(1200);
-
+// ----------------------------------------------------
+// Send AT command and wait for response
+// ----------------------------------------------------
+String sendAT(String cmd, uint16_t timeout = 3000) {
+  SerialAT.println(cmd);
+  long t = millis();
   String resp = "";
-  while (gsm.available()) {
-    resp += gsm.readString();
+
+  while (millis() - t < timeout) {
+    while (SerialAT.available()) {
+      char c = SerialAT.read();
+      resp += c;
+    }
   }
-  resp.trim();
+
+  // Debug output
+  SerialMon.println("CMD: " + cmd);
+  SerialMon.println("RSP: " + resp);
+  SerialMon.println("-----------------------------");
+
   return resp;
 }
 
+// ----------------------------------------------------
+// Parse +QGPSLOC
+// Format: +QGPSLOC: hhmmss.sss,lat,lon,....
+// ----------------------------------------------------
+bool parseGPS(String raw, String &lat, String &lon, String &timeStr) {
+  if (!raw.startsWith("+QGPSLOC")) return false;
 
+  raw.replace("+QGPSLOC: ", "");
+  raw.replace("\r", "");
+  raw.replace("\n", "");
 
-// =====================================================
-// UPLOAD GPS DATA TO FIREBASE (4G HTTP POST)
-// =====================================================
-bool uploadToFirebase(float lat, float lon, String timeStr) {
-  // Create JSON
-  String json = "{";
-  json += "\"lat\":" + String(lat, 6) + ",";
-  json += "\"lon\":" + String(lon, 6) + ",";
-  json += "\"time\":\"" + timeStr + "\"";
-  json += "}";
+  int part = 0;
+  String temp = "";
 
-  Serial.println("Uploading JSON: " + json);
+  for (int i = 0; i < raw.length(); i++) {
+    if (raw[i] == ',' || i == raw.length() - 1) {
+      if (i == raw.length() - 1) temp += raw[i];
 
-  // Send URL
-  gsm.println("AT+QHTTPURL=" + String(firebaseHost.length()) + ",80");
-  delay(500);
-  gsm.print(firebaseHost);
+      if (part == 0) timeStr = temp;
+      if (part == 1) lat = temp;
+      if (part == 2) lon = temp;
+
+      temp = "";
+      part++;
+    } else {
+      temp += raw[i];
+    }
+  }
+
+  return true;
+}
+
+// ----------------------------------------------------
+// Upload JSON to Firebase
+// ----------------------------------------------------
+void uploadToFirebase(String lat, String lon, String t) {
+  String json = "{\"lat\":" + lat + ",\"lon\":" + lon + ",\"time\":\"" + t + "\"}";
+
+  SerialMon.println("Uploading JSON:");
+  SerialMon.println(json);
+
+  // Set URL
+  sendAT("AT+QHTTPURL=" + String(FIREBASE_URL.length()) + ",80");
+  delay(200);
+  SerialAT.print(FIREBASE_URL);
   delay(500);
 
   // POST JSON
-  gsm.println("AT+QHTTPPOST=" + String(json.length()) + ",80,80");
-  delay(300);
-  gsm.print(json);
+  sendAT("AT+QHTTPPOST=" + String(json.length()) + ",80,80");
+  delay(200);
+  SerialAT.print(json);
 
+  delay(1000);
+
+  // Read response
+  sendAT("AT+QHTTPREAD");
+}
+
+// ----------------------------------------------------
+// Setup
+// ----------------------------------------------------
+void setup() {
+  SerialMon.begin(115200);
   delay(2000);
 
-  String response = "";
-  while (gsm.available()) {
-    response += gsm.readString();
-  }
-  response.trim();
+  SerialMon.println("=== EC200U + ESP32-C3 Firebase GPS Uploader ===");
 
-  Serial.println("Firebase Response: " + response);
-  return (response.indexOf("200") >= 0);
+  SerialAT.begin(115200, SERIAL_8N1, EC200U_RX, EC200U_TX);
+  delay(1000);
+
+  // Basic init
+  sendAT("AT");
+  sendAT("AT+CPIN?");
+  sendAT("AT+CFUN=1");
+  sendAT("AT+CREG?");
+  sendAT("AT+CGATT=1");
+
+  // Set APN
+  sendAT("AT+QICSGP=1,1,\"" + APN + "\",\"\",\"\",1");
+
+  // Activate PDP
+  sendAT("AT+QIACT=1", 8000);
+  sendAT("AT+QIACT?");
+
+  // Enable GPS
+  sendAT("AT+QGPS=1", 2000);
+}
+
+// ----------------------------------------------------
+// Loop
+// ----------------------------------------------------
+void loop() {
+
+  // read GPS
+  String raw = sendAT("AT+QGPSLOC=1", 1500);
+
+  String lat, lon, t;
+
+  if (parseGPS(raw, lat, lon, t)) {
+    SerialMon.println("Parsed lat=" + lat + " lon=" + lon + " time=" + t);
+
+    uploadToFirebase(lat, lon, t);
+  } else {
+    SerialMon.println("GPS Fix Not Available");
+  }
+
+  delay(5000); // upload every 5 seconds
 }
