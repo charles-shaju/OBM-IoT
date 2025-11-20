@@ -10,7 +10,7 @@ HardwareSerial gsm(1);
 String gsm_response = "";
 
 // Use the explicit numeric JSON type in the URL
-String firebaseURL = "https://obm-gps-default-rtdb.firebaseio.com/gps.json";
+String firebaseURL = "Your database URL";
 
 unsigned long lastSend = 0;
 
