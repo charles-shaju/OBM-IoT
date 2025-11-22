@@ -68,7 +68,25 @@ git clone https://github.com/charles-shaju/OBM-IoT.git
 cd OBM-IoT
 ```
 
-### 2. Firebase Setup
+### 2. Configure Secrets
+
+**Important:** Create your own secrets file (not tracked by Git):
+
+```bash
+# Copy the template
+cp include/secrets.example.h include/secrets.h
+```
+
+Edit `include/secrets.h` with your credentials:
+```cpp
+#define FIREBASE_URL "https://YOUR-PROJECT-ID-default-rtdb.firebaseio.com/gps.json"
+#define DEVICE_ID "ESP32_001"  // Unique ID for this device
+#define APN_NAME "your-apn-name"
+```
+
+> ⚠️ **Never commit `secrets.h` to Git!** It's already in `.gitignore`.
+
+### 3. Firebase Setup
 
 #### Get Firebase Credentials
 

@@ -3,17 +3,19 @@
 // Optimized for Reliability & Correct JSON
 // =======================================
 #include <Arduino.h>
+#include "secrets.h"  // Contains Firebase URL and credentials
+
 #define RX_PIN 4
 #define TX_PIN 5
 
 HardwareSerial gsm(1);
 String gsm_response = "";
 
-// Device identifier (change for each device)
-String deviceID = "ESP32_001";
+// Device identifier (loaded from secrets.h)
+String deviceID = DEVICE_ID;
 
-// Use the explicit numeric JSON type in the URL
-String firebaseURL = "Your database URL";
+// Firebase URL (loaded from secrets.h)
+String firebaseURL = FIREBASE_URL;
 
 unsigned long lastSend = 0;
 
