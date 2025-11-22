@@ -2,12 +2,15 @@
 // EC200U + ESP32-C3 + Firebase GPS Uploader
 // Optimized for Reliability & Correct JSON
 // =======================================
-
+#include <Arduino.h>
 #define RX_PIN 4
 #define TX_PIN 5
 
 HardwareSerial gsm(1);
 String gsm_response = "";
+
+// Device identifier (change for each device)
+String deviceID = "ESP32_001";
 
 // Use the explicit numeric JSON type in the URL
 String firebaseURL = "https://obm-gps-default-rtdb.firebaseio.com/gps.json";
@@ -73,35 +76,66 @@ void loop() {
         }
 
         // 2. Parse Fields
-        // EC200U Format: +QGPSLOC: <time>,<lon>,<lat>,<alt>,...
-        // We use split() method since String.indexOf is error-prone when fields are missing
+        // EC200U Format: +QGPSLOC: <time>,<lon>,<lat>,<alt>,<speed>,<course>,<fix>,<date>,<nsat>
+        // Fields: time, longitude, latitude, altitude, speed, course(heading), fixmode, date, nsat, ...
         
         // Remove prefix and trim
         gps_raw.replace("+QGPSLOC: ", ""); 
         gps_raw.trim();
         
-        // Find indices
+        // Find indices for all required fields
         int i1 = gps_raw.indexOf(','); // after Time
         int i2 = gps_raw.indexOf(',', i1 + 1); // after LON
         int i3 = gps_raw.indexOf(',', i2 + 1); // after LAT
+        int i4 = gps_raw.indexOf(',', i3 + 1); // after ALT
+        int i5 = gps_raw.indexOf(',', i4 + 1); // after SPEED
+        int i6 = gps_raw.indexOf(',', i5 + 1); // after COURSE/HEADING
+        int i7 = gps_raw.indexOf(',', i6 + 1); // after FIX MODE
+        int i8 = gps_raw.indexOf(',', i7 + 1); // after DATE
+        int i9 = gps_raw.indexOf(',', i8 + 1); // after NSAT
+        int i10 = gps_raw.indexOf(',', i9 + 1); // after HDOP
 
-        if (i3 == -1) {
+        if (i9 == -1) {
             Serial.println("ERROR: Incomplete GPS data string.");
             return;
         }
 
         String longitude = gps_raw.substring(i1 + 1, i2);
         String latitude  = gps_raw.substring(i2 + 1, i3);
+        String altitude  = gps_raw.substring(i3 + 1, i4);
+        String speed     = gps_raw.substring(i4 + 1, i5);
+        String heading   = gps_raw.substring(i5 + 1, i6);
+        String satellites = gps_raw.substring(i8 + 1, i9);
+        String hdop      = (i10 != -1) ? gps_raw.substring(i9 + 1, i10) : "0";
         
-        // 3. Build Firebase JSON (Lat/Lon as numbers, not strings)
+        // 3. Get GSM Signal Strength
+        String signalStrength = "0";
+        if (sendAT("AT+CSQ", "+CSQ:", 1000, false)) {
+            int csqIndex = gsm_response.indexOf("+CSQ:");
+            if (csqIndex != -1) {
+                String csqData = gsm_response.substring(csqIndex + 6);
+                int commaIdx = csqData.indexOf(',');
+                if (commaIdx != -1) {
+                    signalStrength = csqData.substring(0, commaIdx);
+                }
+            }
+        }
+        
+        // 4. Build Firebase JSON (All values as numbers, not strings)
         String json = "{";
-        json += "\"latitude\":" + latitude + ","; // NO QUOTES HERE
-        json += "\"longitude\":" + longitude + ","; // NO QUOTES HERE
-        // RECOMMENDED: Use Firebase Server Timestamp
-        json += "\"timestamp\":{\".sv\":\"timestamp\"}";
+        json += "\"device_id\":\"" + deviceID + "\",";
+        json += "\"latitude\":" + latitude + ",";
+        json += "\"longitude\":" + longitude + ",";
+        json += "\"altitude\":" + altitude + ",";
+        json += "\"speed\":" + speed + ",";
+        json += "\"heading\":" + heading + ",";
+        json += "\"satellites\":" + satellites + ",";
+        json += "\"hdop\":" + hdop + ",";
+        json += "\"signal_strength\":" + signalStrength + ",";
+        json += "\"timestamp\":{\"sv\":\"timestamp\"}";
         json += "}";
 
-        // 4. Send to Firebase
+        // 5. Send to Firebase
         sendFirebase(json);
     }
 }
