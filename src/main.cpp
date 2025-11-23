@@ -23,6 +23,7 @@ unsigned long lastSend = 0;
 bool sendAT(String cmd, String expect, uint16_t timeout, bool debug = true);
 bool sendFirebase(String json);
 String getGPS();
+String detectAPN();
 
 void setup() {
     Serial.begin(115200);
@@ -47,8 +48,12 @@ void setup() {
     // Deactivate existing context before setting new one (improves stability)
     sendAT("AT+QIDEACT=1", "OK", 2000, false);
 
-    // Setup APN (Airtel) - Setting mode 1 = PAP/CHAP auto-selected
-    if (!sendAT("AT+QICSGP=1,1,\"airtelgprs.com\",\"\",\"\",1", "OK", 5000)) {
+    // Auto-detect SIM operator and configure APN
+    String apn = detectAPN();
+    Serial.println("Using APN: " + apn);
+    
+    String apnCmd = "AT+QICSGP=1,1,\"" + apn + "\",\"\",\"\",1";
+    if (!sendAT(apnCmd, "OK", 5000)) {
         Serial.println("FATAL: Failed to set APN.");
         while(1);
     }
@@ -182,6 +187,106 @@ String getGPS() {
     return gsm_response;
 }
 
+
+// ===============================================================
+// AUTO-DETECT APN BASED ON SIM OPERATOR
+// ===============================================================
+String detectAPN() {
+    Serial.println("Detecting SIM operator...");
+    
+    // Get operator name
+    if (sendAT("AT+COPS?", "+COPS:", 3000, false)) {
+        String response = gsm_response;
+        response.toUpperCase();
+        
+        // Indian Operators
+        if (response.indexOf("AIRTEL") >= 0) {
+            Serial.println("Detected: Airtel India");
+            return "airtelgprs.com";
+        }
+        else if (response.indexOf("JIO") >= 0 || response.indexOf("RELIANCE") >= 0) {
+            Serial.println("Detected: Jio India");
+            return "jionet";
+        }
+        else if (response.indexOf("VODAFONE") >= 0 || response.indexOf("VI") >= 0 || response.indexOf("IDEA") >= 0) {
+            Serial.println("Detected: Vi/Vodafone-Idea");
+            return "www";
+        }
+        else if (response.indexOf("BSNL") >= 0) {
+            Serial.println("Detected: BSNL India");
+            return "bsnlnet";
+        }
+        // International Operators
+        else if (response.indexOf("T-MOBILE") >= 0) {
+            Serial.println("Detected: T-Mobile");
+            return "fast.t-mobile.com";
+        }
+        else if (response.indexOf("AT&T") >= 0) {
+            Serial.println("Detected: AT&T");
+            return "phone";
+        }
+        else if (response.indexOf("VERIZON") >= 0) {
+            Serial.println("Detected: Verizon");
+            return "vzwinternet";
+        }
+        else if (response.indexOf("VODAFONE") >= 0) {
+            Serial.println("Detected: Vodafone International");
+            return "internet";
+        }
+        else if (response.indexOf("ORANGE") >= 0) {
+            Serial.println("Detected: Orange");
+            return "internet";
+        }
+    }
+    
+    // Fallback: Try to detect by IMSI (first 3 digits = MCC+MNC)
+    if (sendAT("AT+CIMI", "OK", 3000, false)) {
+        String imsi = gsm_response;
+        imsi.trim();
+        
+        // India - 404/405
+        if (imsi.startsWith("404") || imsi.startsWith("405")) {
+            String mccmnc = imsi.substring(0, 5);
+            
+            // Airtel variations
+            if (mccmnc == "40402" || mccmnc == "40403" || mccmnc == "40410" || 
+                mccmnc == "40416" || mccmnc == "40431" || mccmnc == "40445" ||
+                mccmnc == "40449" || mccmnc == "40470" || mccmnc == "40492" ||
+                mccmnc == "40493" || mccmnc == "40494" || mccmnc == "40495" ||
+                mccmnc == "40496" || mccmnc == "40497" || mccmnc == "40498") {
+                Serial.println("Detected: Airtel (by IMSI)");
+                return "airtelgprs.com";
+            }
+            // Jio
+            else if (mccmnc == "40589" || mccmnc == "40590") {
+                Serial.println("Detected: Jio (by IMSI)");
+                return "jionet";
+            }
+            // Vi/Vodafone-Idea
+            else if (mccmnc == "40401" || mccmnc == "40404" || mccmnc == "40405" ||
+                     mccmnc == "40411" || mccmnc == "40413" || mccmnc == "40420" ||
+                     mccmnc == "40427" || mccmnc == "40430" || mccmnc == "40446" ||
+                     mccmnc == "40456" || mccmnc == "40486") {
+                Serial.println("Detected: Vi/Vodafone-Idea (by IMSI)");
+                return "www";
+            }
+            // BSNL
+            else if (mccmnc == "40434" || mccmnc == "40438" || mccmnc == "40453" ||
+                     mccmnc == "40454" || mccmnc == "40455" || mccmnc == "40457" ||
+                     mccmnc == "40458" || mccmnc == "40459" || mccmnc == "40462" ||
+                     mccmnc == "40464" || mccmnc == "40466" || mccmnc == "40471" ||
+                     mccmnc == "40472" || mccmnc == "40474" || mccmnc == "40476" ||
+                     mccmnc == "40480" || mccmnc == "40481") {
+                Serial.println("Detected: BSNL (by IMSI)");
+                return "bsnlnet";
+            }
+        }
+    }
+    
+    // Ultimate fallback: Use from secrets.h or default
+    Serial.println("Could not detect operator, using default APN");
+    return APN_NAME;
+}
 
 // ===============================================================
 // SEND GPS TO FIREBASE (Updated HTTP Protocol)
